@@ -1,6 +1,6 @@
 # Human-in-the-Loop Deep Reinforcement Learning for Autonomous Driving in Complex Urban Scenarios
 
-> **A TD3-based framework where real-time human intervention directly shapes agent learning in the CARLA simulator.**
+> **A TD3HUG-based framework where real-time human intervention directly shapes agent learning in the CARLA simulator.**
 
 ---
 
@@ -10,15 +10,16 @@ This repository implements a **Human-in-the-Loop (HITL) Deep Reinforcement Learn
 
 The environment is built on **CARLA 0.9.15** and presents the ego vehicle with five concurrent hazard types in a single episode, requiring the agent to learn nuanced avoidance strategies that pure RL often struggles to discover from scratch.
 
+The implementation uses **TD3HUG** (Human-Guided TD3) — intervention transitions receive upweighted gradient updates during policy learning.
+
 ---
 
 ## Key Contributions
 
-- **Real-time human override loop**: holding the right mouse button activates human control; releasing it returns control to the AI. Intervention transitions are flagged (`intervention=1`) and handled separately in the replay buffer.
+- **Real-time human override loop**: holding the right mouse button activates human control (or arrow keys for keyboard control); releasing it returns control to the AI. Intervention transitions are flagged (`intervention=1`) and handled separately in the replay buffer.
 - **Multi-hazard CARLA environment**: five simultaneous obstacle types — wrong-way parked car, oncoming vehicle, jaywalking pedestrian, crosswalk pedestrian, and sidewalk walker.
-- **Four algorithm variants** on a shared TD3 backbone, differing in how human feedback is incorporated into policy updates.
-- **Multiple reward shaping strategies**: no shaping, intervention-penalty, potential-based, and RND (Random Network Distillation) intrinsic reward.
-- **PID controller as virtual human**: enables automated testing of the HITL pipeline without a live operator.
+- **TD3HUG algorithm**: a TD3 backbone (twin critics, delayed actor updates, target policy smoothing) where human intervention transitions receive upweighted gradient updates during learning.
+- **Reward shaping**: configurable strategies including no shaping, intervention-penalty, potential-based, and RND (Random Network Distillation) intrinsic reward.
 
 ---
 
@@ -29,7 +30,7 @@ The environment is built on **CARLA 0.9.15** and presents the ego vehicle with f
 │                     Training Loop                           │
 │                                                             │
 │   ┌──────────┐    action_ai     ┌─────────────────────┐    │
-│   │  TD3     │ ───────────────► │   CARLA Environment  │    │
+│   │  TD3HUG  │ ───────────────► │   CARLA Environment  │    │
 │   │  Agent   │                  │  (5 hazard types)    │    │
 │   └──────────┘                  └──────────┬──────────┘    │
 │        ▲                                   │               │
@@ -39,10 +40,11 @@ The environment is built on **CARLA 0.9.15** and presents the ego vehicle with f
 │   │         Replay Buffer                │◄┘               │
 │   │  • AI transitions  (intervention=0)  │                 │
 │   │  • Human transitions (intervention=1)│                 │
+│   │    (upweighted during learning)      │                 │
 │   └──────────────────────────────────────┘                 │
 │                        ▲                                    │
-│              Human holds RMB → steer with mouse            │
-│              Releases RMB   → AI resumes control           │
+│              Human holds RMB / arrow keys → takes over      │
+│              Releases control → AI resumes control          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,16 +77,11 @@ r = 0.2                              # time-step survival bonus
 
 ---
 
-## Algorithm Variants
+## Algorithm: TD3HUG
 
-All four variants share the TD3 backbone (twin critics, delayed actor updates, target policy smoothing). They differ in how human feedback transitions are used during the learning step:
+**TD3HUG (Human-Guided TD3)** — a TD3 backbone (twin critics, delayed actor updates, target policy smoothing) where transitions collected during human intervention receive upweighted gradient updates when the policy is trained. The intuition: human takeovers happen at states the agent handled poorly, so those transitions carry more learning signal than ordinary agent-generated transitions.
 
-| Algorithm | Description |
-|-----------|-------------|
-| **TD3HUG** | Human-Guided: intervention transitions receive upweighted gradient updates |
-| **TD3IARL** | Intervention-Aware RL: Q-value at moment of takeover is logged and used to shape the critic loss |
-| **TD3HIRL** | Human-Initiated RL: policy gradient is suppressed when human and agent agree; amplified on disagreement |
-| **TD3** (baseline) | Vanilla TD3, human interventions stored as ordinary transitions |
+**Note:** This repository implements and tests TD3HUG only. Other human-guided TD3 variants (e.g., intervention-aware critic shaping, disagreement-based gradient scaling) were explored conceptually but are **not implemented in this codebase** — the code here reflects TD3HUG exclusively.
 
 ---
 
@@ -97,18 +94,23 @@ All four variants share the TD3 backbone (twin critics, delayed actor updates, t
 | `2` | Potential-based | Intrinsic reward proportional to remaining distance to goal |
 | `3` | RND | Novelty-based intrinsic reward via Random Network Distillation; encourages exploration of unseen states |
 
+*(Verify which of these you actually ran and report results for — if you only tested one or two, note that here explicitly.)*
+
 ---
 
 ## Controls (During Training)
 
 | Input | Action |
 |-------|--------|
-| Hold **Right Mouse Button** | Activate human takeover |
+| Hold **Right Mouse Button** | Activate human takeover (mouse) |
 | Move mouse left / right | Analog steering |
-| **A** / **←** | Steer left (additive) |
-| **D** / **→** | Steer right (additive) |
-| **S** / **↓** | Centre steering |
-| Release **RMB** | Return control to AI agent |
+| **A** / **←** | Steer left |
+| **D** / **→** | Steer right |
+| **S** / **↓** | Centre steering / brake |
+| **W** / **↑** | Throttle |
+| Release control | Return control to AI agent |
+
+Both mouse-based and keyboard-based (arrow key) human control were used across different training runs.
 
 ---
 
@@ -121,18 +123,16 @@ Human_In_Loop/
 ├── env.py                                  # Pygame + CARLA env wrapper (mouse/keyboard HITL)
 ├── utils.py                                # Seed, signal handler, path generator, RND module
 ├── train_offline_latest.py                 # Main training script
-├── train_offline.py                        # Earlier training script (for reference)
+├── train_offline.py                        # Earlier training script (kept for reference)
 ├── carla_hitl_multi_obstacle_environment.py # Multi-obstacle CARLA scene definition
-├── wheel_config.ini                        # Config for G29 steering wheel (optional hardware)
-├── TD3_based_DRL/                          # TD3 algorithm variants
-│   ├── TD3.py
+├── TD3_based_DRL/                          # TD3HUG implementation
 │   ├── TD3HUG.py
-│   ├── TD3IARL.py
-│   ├── TD3HIRL.py
 │   └── checkpoints/
 ├── episode_data/                           # Saved episode trajectories (.mat)
 └── results.png                             # Training reward curves
 ```
+
+*(Only TD3HUG.py exists in this repo. If wheel_config.ini is not actually used, remove it from the repo and this structure list.)*
 
 ---
 
@@ -162,29 +162,26 @@ pip install -r requirements.txt
 ### Run training
 
 ```bash
-# Vanilla TD3 (baseline)
-python train_offline_latest.py --algorithm 3
+# TD3HUG with default reward
+python train_offline_latest.py
 
 # TD3HUG with RND reward shaping
-python train_offline_latest.py --algorithm 0 --reward_shaping 3
-
-# With PID controller as virtual human (no live operator needed)
-python train_offline_latest.py --algorithm 0 --pid_controller_guidance
+python train_offline_latest.py --reward_shaping 3
 
 # Resume from checkpoint
-python train_offline_latest.py --algorithm 0 --resume
+python train_offline_latest.py --resume
 ```
 
 ### Key arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--algorithm` | `0` | 0=TD3HUG, 1=TD3IARL, 2=TD3HIRL, 3=TD3 |
 | `--reward_shaping` | `0` | 0=none, 1=intervention, 2=potential, 3=RND |
 | `--maximum_episode` | `1000` | Total training episodes |
-| `--pid_controller_guidance` | `False` | Use PID as virtual human |
 | `--warmup` | `False` | Collect random transitions before learning |
 | `--device` | `cuda` | Training device |
+
+*(Adjust these to match your actual argparse flags — verify against `train_offline_latest.py`.)*
 
 ### Monitor training
 
@@ -205,31 +202,19 @@ Episode rewards, intervention frequency, and loss curves are logged to TensorBoa
 ## Design Decisions
 
 **Why TD3 over SAC or PPO?**
-TD3's deterministic policy makes it straightforward to blend human and agent actions at inference time — there is no stochastic sampling step to reconcile. The twin critics also give a reliable Q-value signal at the moment of human takeover, which TD3IARL uses directly.
+TD3's deterministic policy makes it straightforward to blend human and agent actions at inference time — there is no stochastic sampling step to reconcile.
 
-**Why log Q-values at takeover moments?**
-When a human intervenes, the agent's Q-value at that state captures how confident the agent was in its (apparently wrong) action. Tracking this over training reveals whether the agent is learning to be uncertain in genuinely dangerous states — a useful diagnostic for HITL systems.
+**Why upweight human intervention transitions (TD3HUG)?**
+Human takeovers happen at states where the agent was performing poorly or facing a novel hazard configuration. Treating these transitions as ordinary experience under-uses the most informative signal in the dataset; upweighting them during gradient updates biases learning toward the states that matter most for safety.
 
 **Why RND for intrinsic reward?**
 CARLA environments are large and sparsely rewarded. RND gives the agent an intrinsic signal to explore novel states rather than converging on a single safe trajectory, which matters when five obstacle configurations vary each episode.
 
-**PID as virtual human**
-The PID controller activates only when the ego vehicle deviates significantly from the reference path near obstacle clusters. This lets the HITL pipeline be evaluated and iterated without requiring a human operator for every run.
-
 ---
 
-## Citation
+## Attribution
 
-If you use this work, please cite:
-
-```bibtex
-@misc{ashakumesh2024hitl,
-  author       = {Ashak Umesh},
-  title        = {Human-in-the-Loop Deep Reinforcement Learning for Autonomous Driving},
-  year         = {2024},
-  howpublished = {\url{https://github.com/AshakUmesh/Human_In_Loop}}
-}
-```
+This implementation builds on an open-source CARLA-based Human-in-the-Loop RL reference (exact source repository not retained — being tracked down). The TD3HUG implementation, multi-hazard environment configuration, and training loop reflect my own implementation and experimentation on top of that base.
 
 ---
 
